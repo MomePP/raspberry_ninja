@@ -498,59 +498,69 @@ class WebRTCClient:
                 self.pipe = None
             
     async def loop(self):
-        assert self.conn
-        print("WSS CONNECTED")
-        async for message in self.conn:
-            msg = json.loads(message)
-            if 'from' in msg:
-                if msg['from'] == self.puuid:
-                    continue
-                UUID = msg['from']
-            elif 'UUID' in msg:
-                if (self.puuid != None) and (self.puuid != msg['UUID']):
-                    continue
-                UUID = msg['UUID']
-            else:
+        while True:
+            if self.conn is None:
+                print("create new wss connection")
+                asyncio.get_event_loop.run_until_complete(self.connect())
+            elif not self.conn.open:
+                print("wss not connected .. reconnection")
+                await self.conn.close()
+                self.conn = None
                 continue
-                
-            if UUID not in self.clients:
-                self.clients[UUID] = {}
-                self.clients[UUID]["UUID"] = UUID
-                self.clients[UUID]["session"] = None
-                self.clients[UUID]["send_channel"] = None
-                self.clients[UUID]["timer"] = None
-                self.clients[UUID]["ping"] = 0
-                self.clients[UUID]["webrtc"] = None
-                
-            if 'session' in msg:
-                if not self.clients[UUID]['session']:
-                    self.clients[UUID]['session'] = msg['session']
-                elif self.clients[UUID]['session'] != msg['session']:
-                    print("sessions don't match")
 
-            if 'description' in msg:
-                msg = msg['description']
-                if 'type' in msg:
-                    if msg['type'] == "offer":
-                        await self.start_pipeline(UUID)
-                        self.handle_offer(msg, UUID)
-                    elif msg['type'] == "answer":
-                        self.handle_sdp_ice(msg, UUID)
-            elif 'candidates' in msg:
-                for ice in msg['candidates']:
-                    self.handle_sdp_ice(ice, UUID)
+            assert self.conn
+            print("WSS CONNECTED")
+            async for message in self.conn:
+                msg = json.loads(message)
+                if 'from' in msg:
+                    if msg['from'] == self.puuid:
+                        continue
+                    UUID = msg['from']
+                elif 'UUID' in msg:
+                    if (self.puuid != None) and (self.puuid != msg['UUID']):
+                        continue
+                    UUID = msg['UUID']
+                else:
+                    continue
+                    
+                if UUID not in self.clients:
+                    self.clients[UUID] = {}
+                    self.clients[UUID]["UUID"] = UUID
+                    self.clients[UUID]["session"] = None
+                    self.clients[UUID]["send_channel"] = None
+                    self.clients[UUID]["timer"] = None
+                    self.clients[UUID]["ping"] = 0
+                    self.clients[UUID]["webrtc"] = None
+                    
+                if 'session' in msg:
+                    if not self.clients[UUID]['session']:
+                        self.clients[UUID]['session'] = msg['session']
+                    elif self.clients[UUID]['session'] != msg['session']:
+                        print("sessions don't match")
 
-            elif 'request' in msg:
-                if 'offerSDP' in  msg['request']:
-                    await self.start_pipeline(UUID)
-                elif msg['request'] == 'play':
-                    if self.puuid==None:
-                        self.puuid = str(random.randint(10000000,99999999))
-                    if 'streamID' in msg:
-                        if msg['streamID'] == self.stream_id:
+                if 'description' in msg:
+                    msg = msg['description']
+                    if 'type' in msg:
+                        if msg['type'] == "offer":
                             await self.start_pipeline(UUID)
-           
-        return 0
+                            self.handle_offer(msg, UUID)
+                        elif msg['type'] == "answer":
+                            self.handle_sdp_ice(msg, UUID)
+                elif 'candidates' in msg:
+                    for ice in msg['candidates']:
+                        self.handle_sdp_ice(ice, UUID)
+
+                elif 'request' in msg:
+                    if 'offerSDP' in  msg['request']:
+                        await self.start_pipeline(UUID)
+                    elif msg['request'] == 'play':
+                        if self.puuid==None:
+                            self.puuid = str(random.randint(10000000,99999999))
+                        if 'streamID' in msg:
+                            if msg['streamID'] == self.stream_id:
+                                await self.start_pipeline(UUID)
+            
+            # return 0
 
 
 def check_plugins(needed):
@@ -743,7 +753,17 @@ if __name__=='__main__':
         print("\nAvailable options include --streamid, --bitrate, and --server. Default bitrate is 4000 (kbps)")
         print(f"\nYou can view this stream at: https://vdo.ninja/?password=false&view={args.streamid}");
 
+    loop = asyncio.get_event_loop()
     c = WebRTCClient(args.streamid, args.server, args.multiviewer, args.record)
-    asyncio.get_event_loop().run_until_complete(c.connect())
-    res = asyncio.get_event_loop().run_until_complete(c.loop())
-    sys.exit(res)
+
+    loop.run_until_complete(c.connect())
+    # res = asyncio.get_event_loop().run_until_complete(c.loop())
+    try:
+        res = asyncio.ensure_future(c.loop())
+        loop.run_forever()
+    except KeyboardInterrupt:
+        print("exit by keyboard interrupt ...")
+        sys.exit(res)
+    finally:
+        print("closing vdo-ninja")
+        loop.close()
